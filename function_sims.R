@@ -2,10 +2,11 @@
 # E-mail: luis.depablo@colorado.edu
 # Last updated: September 11, 2023
 
-# load packages and set working directory to script location ----
+# load packages and set working directory ----
 library(tidyverse)
 library(tictoc)
 library(deSolve)
+# set wd to active script location
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 
 # define some useful functions ----
@@ -180,14 +181,14 @@ get_dB <- function(t, state, parameters) {
 # function to run a simulation for a given site
 # input: node list, edge list, initial state vector
 # output: dataframe of biomasses for each species at each time step, cols are species, rows are time
-run_sim <- function(nodes, edges, state) {
+run_sim <- function(nodes, edges, num_generations, state) {
   tic()
   # generate adjacency matrix from node and edge list
   adjacency_matrix <<- make_adj(nodes, edges)
   # set parameters (use values from Romanuk et al. (2009))
   pars <- c(K=1,x=0.5,y=6,e=1,B0=0.5,q=0.2)
   # set time vector times = (1,...,2000)
-  times <- seq(1,100,1)
+  times <- seq(1,num_generations,1)
   
   # run simulation on web and store output as dataframe
   simulation_df <- as.data.frame(ode(state, times, get_dB, pars, method = "ode45"))
@@ -200,6 +201,40 @@ run_sim <- function(nodes, edges, state) {
   return(simulation_df)
 }
 
+# function to use a monte carlo simulation to optimize initial conditions for fewest extinctions
+monte_carlo_state <- function(num_iterations, nodes, edges) {
+  # get number of species in food web
+  num_species <- nrow(nodes)
+  
+  # use lapply to generate random initial states and test each one on 25 generations of the ATN
+  possible_states <- lapply(1:num_iterations, function(i) {
+    # generate a random state
+    rand_state <- runif(num_species)
+    # test that state on the ATN
+    curr_results <- run_sim(nodes, edges, 100, rand_state)
+    # get final biomasses
+    final_state <- curr_results[nrow(curr_results), ]
+    # check how many species went extinct
+    num_extinct <- length(final_state[final_state < 0.0000000001])
+    # return final state and store its score in the last position of the vector
+    rand_state <- append(rand_state, num_extinct)
+  })
+  
+  # return only the best state
+  best_state <- NULL
+  min_extinctions <- Inf
+  
+  for(i in 1:length(possible_states)) {
+    curr_state <- possible_states[[i]]
+    curr_score <- curr_state[length(curr_state)]
+    if(curr_score < min_extinctions) {
+      best_state <- curr_state[-length(curr_state)]
+      min_extinctions <- curr_score
+    }
+  }
+  
+  return(best_state)
+}
 
 # run a simulation on empirical food webs ----
 
@@ -212,16 +247,17 @@ simulation_results <- lapply(1:length(food_webs_raw), function(i){
   curr_nodes <- food_webs_raw[[i]][[1]]
   curr_edges <- food_webs_raw[[i]][[2]]
   # generate initial state vector
-  curr_state <- make_state(curr_nodes, producer_biomass = 10)
+  #curr_state <- make_state(curr_nodes, producer_biomass = 10)
+  curr_state <- monte_carlo_state(10, curr_nodes, curr_edges)
   # run simulation
-  run_sim(nodes = curr_nodes, edges = curr_edges, curr_state)
+  run_sim(nodes = curr_nodes, edges = curr_edges, num_generations = 100, curr_state)
 })
 
 # get site names for food webs
 names(simulation_results) <- names(food_webs_raw)
 
 # plot biomasses over time
-# add time column to simulation results
+# add time column and site column to simulation results
 simulation_results <- lapply(1:length(simulation_results), function(i) {
   simulation_results[[i]]$t <- as.numeric(rownames(simulation_results[[i]]))
   simulation_results[[i]]$site <- names(simulation_results)[i]
@@ -230,9 +266,10 @@ simulation_results <- lapply(1:length(simulation_results), function(i) {
 
 # make results long form for plotting
 simulation_results_long <- lapply(simulation_results, function(i) {
-  n <- 1
+  # take every n row of array
+  #n <- 1
   i %>%
-    slice(which(row_number() %% n == 0)) %>%
+    #slice(which(row_number() %% n == 0)) %>%
     pivot_longer(-c(t, site), names_to = "species_ID", values_to = "biomass")
 })
 
@@ -257,7 +294,7 @@ evaluate_fisheries <- function(biomasses, nodes) {
   fish <- nodes %>%
     filter(Class == "Actinopteri")
   # subset biomass list to include only fish
-  biomasses <- biomasses[names(biomasses) %in% fish$Node.ID]
+  biomasses <- as.numeric(biomasses[names(biomasses) %in% fish$Node.ID])
   # fisheries score is the sum of all fish biomasses (total fish biomass)
   score <- sum(biomasses)
 }
@@ -267,15 +304,25 @@ final_biomasses <- c(unlist(slice(simulation_df, nrow(simulation_df))))
 # evaluate fisheries score on final biomasses
 fisheries_score <- evaluate_fisheries(final_biomasses, nodes = food_webs_raw[[1]][[1]])
 
-# use lapply to calculate fisheries score for every time step
-fisheries_t_series <- data.frame(
-  score = apply(simulation_df, 1, function(i) {
-    evaluate_fisheries(i, nodes = food_webs_raw[[1]][[1]])}),
-  t = 1:100
+# use lapply to get fisheries score for every food web
+fisheries_scores <- lapply(1:length(simulation_results), function(i) {
+  fisheries_t_series <- data.frame(
+    score = apply(simulation_results[[i]], 1, function(j) {
+      evaluate_fisheries(j, nodes = food_webs_raw[[i]][[1]])}
+    ),
+    t = 1:100
   )
+})
+
+# # use apply to calculate fisheries score for every row of dataframe
+# fisheries_t_series <- rbind(apply(1:nrow(simulation_results[[1]]), 1, function(i) {
+#   data.frame(
+#     score = evaluate_fisheries(simulation_results[[1]][i,], food_webs_raw[[1]][[1]]),
+#     t = i)
+# }))
 
 # plot fisheries over time
-ggplot(data = fisheries_t_series, aes(x = t, y = score)) +
+ggplot(data = fisheries_scores[[3]], aes(x = t, y = score)) +
   geom_line()
 
 
