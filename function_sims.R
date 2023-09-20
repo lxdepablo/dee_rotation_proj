@@ -19,7 +19,9 @@ setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 # function to extract the site name from the filename
 extract_site_name <- function(fn) {
   # Extract substring between the first two periods
-  site_name <- sub("^.*?\\.(.*?)\\..*$", "\\1", fn)
+  site_name <- sub("^[^.]+\\.([^.]+\\.[^.]+)\\..*", "\\1", fn)
+  #site_name <- sub("(?:[^_]*_[^_]*_+([^.]+\\.[^.]+)\\.*)", "\\1", fn)
+  
   # replace spaces with underscores
   site_name <- gsub(" ", "_", site_name)
 }
@@ -286,36 +288,24 @@ monte_carlo_state <- function(num_iterations, nodes, edges) {
   return(best_state)
 }
 
-
-# run a simulation on empirical food webs ----
-
-# read in some food webs from node and edge lists
-food_webs_raw <- read_food_webs("data/food_webs")
-
-# run the simulation on every food web in list
-simulation_results <- lapply(1:length(food_webs_raw), function(i){
-  # get node and edge lists for current food web
-  curr_nodes <- food_webs_raw[[i]][[1]]
-  curr_edges <- food_webs_raw[[i]][[2]]
-  
-  # generate initial state vector
-  #curr_state <- make_state(curr_nodes, producer_biomass = 10)
-  curr_state <- monte_carlo_state(50, curr_nodes, curr_edges)
-  
-  # run simulation
-  vectorized_run_sim(nodes = curr_nodes, edges = curr_edges, num_generations = 200, curr_state)
-})
-# get site names for food webs
-names(simulation_results) <- names(food_webs_raw)
+# function to simulate a random extinction
+# input: vector of biomasses
+# output: new vector of biomasses with a random sp extinct
+rand_extinct <- function(biomasses) {
+  rand_sp <- runif(1, min = 1, max = length(biomasses) + 1)
+  new_biomasses <- biomasses
+  new_biomasses[rand_sp] <- 0
+  return(new_biomasses)
+}
 
 
 # define some ecosystem services ----
 
-# example ecosystem service function to calculate fisheries score
+# function to calculate fisheries score
 # input: named vector of biomasses at a time point where names are Node ID's, node and edge lists
 #   for food web of interest
 # output: numeric score (total fish biomass)
-evaluate_fisheries <- function(biomasses, nodes) {
+fisheries <- function(biomasses, nodes) {
   # get all the fish in the food web from node list
   fish <- nodes %>%
     filter(Class == "Actinopteri")
@@ -325,45 +315,104 @@ evaluate_fisheries <- function(biomasses, nodes) {
   score <- sum(biomasses)
 }
 
-# get biomasses at last time step
-final_biomasses <- c(unlist(slice(simulation_df, nrow(simulation_df))))
-# evaluate fisheries score on final biomasses
-fisheries_score <- evaluate_fisheries(final_biomasses, nodes = food_webs_raw[[1]][[1]])
+# function to calculate total carbon
+total_carbon <- function(biomasses) {
+  score <- sum(biomasses)
+}
 
-# use lapply to get fisheries score for every food web
-fisheries_scores <- lapply(1:length(simulation_results), function(i) {
-  fisheries_t_series <- data.frame(
-    score = apply(simulation_results[[i]], 1, function(j) {
-      evaluate_fisheries(j, nodes = food_webs_raw[[i]][[1]])}
-    ),
-    t = 1:100
-  )
+# function to calculate water filtration score
+water_filtration <- function(biomasses, nodes) {
+  # get all the filter feeding species
+  filter_feeders <- nodes %>%
+    filter(Class %in% c("Bivalvia", "Thecostraca"))
+  
+  # subset biomass list to include only filter feeders
+  biomasses <- as.numeric(biomasses[names(biomasses) %in% filter_feeders$Node.ID])
+  # fisheries score is the sum of all fish biomasses (total fish biomass)
+  score <- sum(biomasses)
+}
+
+# function to calculate foundation species score
+foundation_score <- function(biomasses, nodes) {
+  # get all the foundation species
+  foundation_species <- nodes %>%
+    filter(Class %in% c("Thecostraca") | Order %in% c("Mytilida") | Genus %in% c("Fucus"))
+  
+  # subset biomass list to include only filter feeders
+  biomasses <- as.numeric(biomasses[names(biomasses) %in% foundation_species$Node.ID])
+  # fisheries score is the sum of all fish biomasses (total fish biomass)
+  score <- sum(biomasses)
+}
+
+
+# run a simulation on empirical food webs ----
+
+# read in some food webs from node and edge lists
+food_webs_raw <- read_food_webs("data/food_webs/historical")
+
+# run the simulation on every food web in list for 1000 generations
+first_1000 <- lapply(1:length(food_webs_raw), function(i){
+  # get node and edge lists for current food web
+  curr_nodes <- food_webs_raw[[i]][[1]]
+  curr_edges <- food_webs_raw[[i]][[2]]
+  
+  # generate initial state vector
+  #curr_state <- make_state(curr_nodes, producer_biomass = 10)
+  curr_state <- monte_carlo_state(1, curr_nodes, curr_edges)
+  
+  # run simulation
+  vectorized_run_sim(nodes = curr_nodes, edges = curr_edges, num_generations = 50, curr_state)
+})
+# get site names for food webs
+names(first_1000) <- names(food_webs_raw)
+
+# get final states after 1000 generations
+post_disturbance_states <- lapply(1:length(first_1000), function(i) {
+  curr_food_web <- first_1000[[i]]
+  final_state <- curr_food_web[nrow(curr_food_web),]
+  new_state <- rand_extinct(final_state)
 })
 
-# # use apply to calculate fisheries score for every row of dataframe
-# fisheries_t_series <- rbind(apply(1:nrow(simulation_results[[1]]), 1, function(i) {
-#   data.frame(
-#     score = evaluate_fisheries(simulation_results[[1]][i,], food_webs_raw[[1]][[1]]),
-#     t = i)
-# }))
+# run the simulation on every food web in list for 1000 more generations
+second_1000 <- lapply(1:length(food_webs_raw), function(i){
+  # get node and edge lists for current food web
+  curr_nodes <- food_webs_raw[[i]][[1]]
+  curr_edges <- food_webs_raw[[i]][[2]]
+  
+  # generate initial state vector
+  #curr_state <- make_state(curr_nodes, producer_biomass = 10)
+  curr_state <- unlist(post_disturbance_states[i])
+  
+  # run simulation
+  vectorized_run_sim(nodes = curr_nodes, edges = curr_edges, num_generations = 50, curr_state)
+})
+# get site names for food webs
+names(second_1000) <- names(food_webs_raw)
 
-# plot fisheries over time
-ggplot(data = fisheries_scores[[3]], aes(x = t, y = score)) +
-  geom_line()
-
+# combine together first 1000 and second 1000 generations
+full_sims <- lapply(1:length(first_1000), function(i) {
+  # get first 1000 and second 1000 generations for current site
+  curr_first_1000 <- first_1000[[i]]
+  curr_second_1000 <- second_1000[[i]]
+  
+  # combine them together into full sim
+  full_sim <- rbind(curr_first_1000, curr_second_1000)
+})
+names(full_sims) <- names(food_webs_raw)
 
 # analysis ----
 
 ## plot biomasses over time ----
 # add time column and site column to simulation results
-simulation_results <- lapply(1:length(simulation_results), function(i) {
-  simulation_results[[i]]$t <- as.numeric(rownames(simulation_results[[i]]))
-  simulation_results[[i]]$site <- names(simulation_results)[i]
-  return(simulation_results[[i]])
+full_sims_plotting <- full_sims
+full_sims_plotting <- lapply(1:length(full_sims_plotting), function(i) {
+  full_sims_plotting[[i]]$t <- as.numeric(rownames(full_sims_plotting[[i]]))
+  full_sims_plotting[[i]]$site <- names(full_sims_plotting)[i]
+  return(full_sims_plotting[[i]])
 })
 
 # make results long form for plotting
-simulation_results_long <- lapply(simulation_results, function(i) {
+simulation_results_long <- lapply(full_sims_plotting, function(i) {
   # take every n row of array
   #n <- 1
   i %>%
@@ -377,8 +426,10 @@ all_data <- bind_rows(simulation_results_long)
 # draw plots
 ggplot(data = all_data, aes(x = t, y = biomass, col = species_ID)) +
   facet_wrap(~site) +
+  theme_minimal() +
   theme(legend.position = "none") +
   geom_line()
+
 
 ## calculate relative ascendancies ----
 # iterate over node and edge lists and generate adjacency matrices
@@ -404,7 +455,33 @@ relative_ascendancies <- lapply(1:length(adjacency_matrices), function(i) {
 })
 
 
+## calculate ecosystem services ----
 
+# use lapply to loop over all food webs
+filtration_scores <- lapply(1:length(full_sims), function(i) {
+  # apply again to loop over every row of time series dataframe
+  filtration_t_series <- lapply(1:nrow(full_sims[[i]]), function(j) {
+    # get current row from dataframe
+    curr_row <- as.numeric(full_sims[[i]][j,])
+    # get names from column headers
+    names(curr_row) <- colnames(full_sims[[i]])
+    
+    # calculate score for that row
+    curr_filtration <- water_filtration(curr_row, food_webs_raw[[i]][[1]])
+  })
+})
+
+# make into time series dataframes
+filtration_time_series <- lapply(1:length(filtration_scores), function(i) {
+  data.frame(t = 1:length(filtration_scores[[i]]), site = names(full_sims)[i], score = unlist(filtration_scores[[i]]))
+})
+
+# plot filtration scores for all sites over time
+all_filtration_data <- bind_rows(filtration_time_series)
+
+ggplot(data = all_filtration_data, aes(x = t, y = score)) +
+  geom_line() +
+  facet_wrap(~site)
 
 
 
