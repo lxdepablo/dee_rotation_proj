@@ -24,7 +24,7 @@ fisheries <- function(biomasses, nodes) {
 }
 
 # function to calculate total carbon
-total_carbon <- function(biomasses) {
+total_carbon <- function(biomasses, nodes) {
   score <- sum(biomasses)
 }
 

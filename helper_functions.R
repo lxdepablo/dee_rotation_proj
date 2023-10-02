@@ -15,7 +15,7 @@ library(intergraph)
 
 # function to extract the site name from the filename
 extract_site_name <- function(fn) {
-  # Extract substring between the first two periods
+  # Extract substring between the first and third periods
   site_name <- sub("^[^.]+\\.([^.]+\\.[^.]+)\\..*", "\\1", fn)
   #site_name <- sub("(?:[^_]*_[^_]*_+([^.]+\\.[^.]+)\\.*)", "\\1", fn)
   
@@ -249,7 +249,7 @@ monte_carlo_state <- function(num_iterations, nodes, edges) {
   # get number of species in food web
   num_species <- nrow(nodes)
   
-  # use lapply to generate random initial states and test each one on 25 generations of the ATN
+  # use lapply to generate random initial states and test each one on 100 generations of the ATN
   possible_states <- lapply(1:num_iterations, function(i) {
     # generate a random state
     rand_state <- runif(num_species)
@@ -279,6 +279,14 @@ monte_carlo_state <- function(num_iterations, nodes, edges) {
   return(best_state)
 }
 
+# function to generate a random initial state for a simulation
+rand_state <- function(nodes) {
+  # get number of species in food web
+  num_species <- nrow(nodes)
+  # generate state
+  state <- runif(num_species)
+}
+
 # function to simulate a random extinction
 # input: vector of biomasses
 # output: new vector of biomasses with a random sp extinct
@@ -301,7 +309,7 @@ rand_extinct <- function(biomasses) {
 sim_disturbance <- function(nodes, edges, pre_dist_gens, post_dist_gens, dist_fun, ...) {
   tic()
   # generate initial state vector
-  init_state <- monte_carlo_state(1, nodes, edges)
+  init_state <- rand_state(nodes)
   
   # run first half of simulation
   first_half <- vectorized_run_sim(nodes, edges, pre_dist_gens, init_state)
@@ -323,6 +331,18 @@ sim_disturbance <- function(nodes, edges, pre_dist_gens, post_dist_gens, dist_fu
   
   # Return the result
   return(full_sim)
+}
+
+# input: vectors of biomasses before disturbance and at end of simulation,
+#   function to calculate ecosystem service
+# output: numeric change in service between two time points
+# function to calculate change in a service
+calc_delta_es <- function(pre_dist_state, final_state, es_fun, ...) {
+  # get service score before and after disturbance
+  pd_es <- es_fun(pre_dist_state, ...)
+  f_es <- es_fun(final_state, ...)
+  # calculate change in service
+  delta_es <- (f_es - pd_es)
 }
 
 
